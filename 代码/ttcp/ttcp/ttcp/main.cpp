@@ -157,61 +157,75 @@ void server_logic(int port)
 		return;
 	}
 
-	//等到连接套接字
-	SOCKET sAccept;
-	sockaddr_in addrClient;
-	memset(&addrClient, 0, sizeof(sockaddr_in));
-	int addrClientLen = sizeof(addrClient);
-	sAccept = accept(sServer, (SOCKADDR*)&addrClient, &addrClientLen);
-	if (sAccept == INVALID_SOCKET)
+	while (1)
 	{
-		closesocket(sServer);
-		WSACleanup();
-		cout << "接受套接字失败" << endl;
-		return;
-	}
-
-	//接收数据
-	char bufRead[128];
-	SessionMessage session_info;
-	int nReadLen = recv(sAccept, bufRead, sizeof(session_info), 0);
-	session_info.number = (((SessionMessage *)bufRead)->number);
-	session_info.length = (((SessionMessage *)bufRead)->length);
-	cout << session_info.number << " messages, each size is " << session_info.length << endl;
-	double total_mb = 1.0 * session_info.number * session_info.length / 1024 / 1024;
-	//cout << total_mb << " MiB in total" << endl;
-	printf("%.3f MiB in total\n", total_mb);
-
-	const int total_len = sizeof(int32_t) + session_info.length;
-	char* p = new char[total_len];
-
-	double start = now();
-	for (int i = 0; i < session_info.number; ++i)
-	{
-		int nReadLen = recv(sAccept, p, total_len, 0);
-		if (nReadLen != total_len)
+		//等到连接套接字
+		SOCKET sAccept;
+		sockaddr_in addrClient;
+		memset(&addrClient, 0, sizeof(sockaddr_in));
+		int addrClientLen = sizeof(addrClient);
+		sAccept = accept(sServer, (SOCKADDR*)&addrClient, &addrClientLen);
+		if (sAccept == INVALID_SOCKET)
 		{
-			cout << "接收数据不对，接受到 " << nReadLen << " 应该要 " << total_len << endl;
-			break;
+			closesocket(sServer);
+			WSACleanup();
+			cout << "接受套接字失败" << endl;
+			return;
 		}
 
-		PayloadMessage* payload = (PayloadMessage*)p;
+		//接收数据
+		char bufRead[128];
+		SessionMessage session_info;
+		int nReadLen = recv(sAccept, bufRead, sizeof(session_info), 0);
+		session_info.number = (((SessionMessage *)bufRead)->number);
+		session_info.length = (((SessionMessage *)bufRead)->length);
+		cout << "服务端收到 SessionMessage: 包个数=" << session_info.number << " 每个包的大小=" << session_info.length << endl;
+		double total_mb = 1.0 * session_info.number * session_info.length / 1024 / 1024;
+		//cout << total_mb << " MiB in total" << endl;
+		printf("%.3f MiB in total\n", total_mb);
 
-		if (payload->length != session_info.length)
+		const int total_len = sizeof(int32_t) + session_info.length;
+		char* p = new char[total_len];
+
+		double start = now();
+		int index = 0;
+		for (int i = 0; i < session_info.number; ++i)
 		{
-			cout << "大小不对，接受到的大小是 " << payload->length << " 应该要是 " << session_info.length << endl;
-			break;
-		}
-		
-		int ack = htonl(payload->length);
-		send(sAccept, (char *)&ack, sizeof(ack), 0);
-	}
-	double elapsed = now() - start;
-	printf("%.3f seconds\n%.3f MiB/s\n", elapsed, total_mb / elapsed);
+			int len = 0;
+			while (len != total_len)
+			{
+				char *tmp = p + len;
+				int nReadLen = recv(sAccept, tmp, total_len - len, 0);
+				len += nReadLen;
+			}
+			
+			if (0 && nReadLen != total_len)
+			{
+				cout << "服务端收到的数据不对: 实际接受到的数据大小=" << nReadLen << " 应该接收到的数据大小=" << total_len << endl << endl;
+				goto end_point;
+			}
 
-	delete[] p;
+			PayloadMessage* payload = (PayloadMessage*)p;
+
+			if (payload->length != session_info.length)
+			{
+				cout << "服务端收到的包体数据不对: 实际接受到的数据大小=" << payload->length << " 应该接收到的数据大小=" << session_info.length << endl;
+				break;
+			}
+
+			//int ack = htonl(payload->length);
+			int ack = payload->length;
+			send(sAccept, (char *)&ack, sizeof(ack), 0);
+			//cout << index++;
+		}
+		double elapsed = now() - start;
+		printf("%.3f seconds\n%.3f MiB/s\n\n", elapsed, total_mb / elapsed);
+
+end_point:
+		delete[] p;
+		closesocket(sAccept);
+	}
 	closesocket(sServer);
-	closesocket(sAccept);
 	WSACleanup();
 }
 
@@ -252,6 +266,7 @@ void client_logic(char *ip_addr, int port, int buffer_count, int buffer_length)
 	sessionMessage.number = (number);
 	sessionMessage.length = (length);
 	send(sClient, (char *)&sessionMessage, sizeof(sessionMessage), 0);
+	cout << "客户端发送 SessionMessage: 包个数=" << sessionMessage.number << " 每个包的大小=" << sessionMessage.length << endl;
 
 	const int total_len = sizeof(int32_t) + length;
 	char *p = new char[total_len];
@@ -263,22 +278,28 @@ void client_logic(char *ip_addr, int port, int buffer_count, int buffer_length)
 		payload->data[i] = "0123456789ABCDEF"[i % 16];
 	}
 
+	cout << "客户端准备开始发送 PayloadMessage..." << endl;
+	Sleep(1000);
+	int index = 0;
 	for (int i = 0; i < number; ++i)
 	{
 		int send_size = send(sClient, (char *)payload, total_len, 0);
 		if (send_size != total_len)
 		{
-			cout << "客户端发送数据出错: send_size=" << send_size << " total_len=" << total_len << endl;
+			cout << "客户端发送数据出错: 实际发送的数据大小=" << send_size << " 应该发送的数据大小=" << total_len << endl;
+			break;
 		}
 
 		int ack = 0;
 		int nReadLen = recv(sClient, (char *)&ack, sizeof(ack), 0);
-		ack = ntohl(ack);
+		//ack = ntohl(ack);
 		if (ack != length)
 		{
-			cout << "有问题 ack=" << ack << " 应该是 " << length << endl;
-			return;
+			cout << "客户端收到的确认数据出错: 实际收到的数据大小=" << ack << " 应该收到的数据大小=" << length << endl;
+			break;
 		}
+
+		//cout << index++;
 	}
 
 	delete[] payload;
