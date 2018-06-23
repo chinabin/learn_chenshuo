@@ -30,11 +30,9 @@ struct Optinons
 	char ip_addr[16];
 };
 
-double now()
+float now()
 {
-	SYSTEMTIME st;
-	GetSystemTime(&st);
-	return st.wSecond + st.wMilliseconds / 1000000.0;
+	return (float)GetTickCount() / 1000.0;
 }
 
 bool string_compare(char *str1, char *str2)
@@ -187,7 +185,7 @@ void server_logic(int port)
 		const int total_len = sizeof(int32_t) + session_info.length;
 		char* p = new char[total_len];
 
-		double start = now();
+		float start = now();
 		int index = 0;
 		for (int i = 0; i < session_info.number; ++i)
 		{
@@ -218,7 +216,7 @@ void server_logic(int port)
 			send(sAccept, (char *)&ack, sizeof(ack), 0);
 			//cout << index++;
 		}
-		double elapsed = now() - start;
+		float elapsed = now() - start;
 		printf("%.3f seconds\n%.3f MiB/s\n\n", elapsed, total_mb / elapsed);
 
 end_point:
@@ -279,8 +277,6 @@ void client_logic(char *ip_addr, int port, int buffer_count, int buffer_length)
 	}
 
 	cout << "客户端准备开始发送 PayloadMessage..." << endl;
-	Sleep(1000);
-	int index = 0;
 	for (int i = 0; i < number; ++i)
 	{
 		int send_size = send(sClient, (char *)payload, total_len, 0);
