@@ -32,7 +32,9 @@ struct Optinons
 
 float now()
 {
-	return (float)GetTickCount() / 1000.0;
+	SYSTEMTIME systemtime;
+	GetSystemTime(&systemtime);
+	return systemtime.wDay * 24 * 3600 + systemtime.wHour * 3600 + systemtime.wMinute *60 + systemtime.wSecond + systemtime.wMilliseconds / 1000.0;
 }
 
 bool string_compare(char *str1, char *str2)
@@ -178,7 +180,7 @@ void server_logic(int port)
 		session_info.number = (((SessionMessage *)bufRead)->number);
 		session_info.length = (((SessionMessage *)bufRead)->length);
 		cout << "服务端收到 SessionMessage: 包个数=" << session_info.number << " 每个包的大小=" << session_info.length << endl;
-		double total_mb = 1.0 * session_info.number * session_info.length / 1024 / 1024;
+		float total_mb = 1.0 * session_info.number * session_info.length / 1024 / 1024;
 		//cout << total_mb << " MiB in total" << endl;
 		printf("%.3f MiB in total\n", total_mb);
 
@@ -217,7 +219,14 @@ void server_logic(int port)
 			//cout << index++;
 		}
 		float elapsed = now() - start;
-		printf("%.3f seconds\n%.3f MiB/s\n\n", elapsed, total_mb / elapsed);
+		if (elapsed)
+		{
+			printf("%.3f seconds\n%.3f MiB/s\n\n", elapsed, total_mb / elapsed);
+		}
+		else
+		{
+			printf("%.3f seconds\n%.3f MiB/s\n\n", elapsed, total_mb / 0.001);
+		}
 
 end_point:
 		delete[] p;
