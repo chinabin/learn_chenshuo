@@ -1,19 +1,13 @@
 
 #include <WinSock2.h>
 #include <Ws2tcpip.h>		//inet_ntop的头文件
+#include <time.h>
 
-#include <iostream>
 #include <iomanip>
 
-using namespace std;
 #pragma comment(lib, "WS2_32.lib")
 
 #pragma pack (1)
-
-#define DEFAULT_IP_ADDRESS	"127.0.0.1"
-#define DEFAULT_PORT		5000
-#define DEFAULT_BUFFER_SIZE		65536
-#define DEFAULT_BUFFER_COUNT	1024
 
 enum app_type
 {
@@ -34,7 +28,11 @@ float now()
 {
 	SYSTEMTIME systemtime;
 	GetSystemTime(&systemtime);
-	return systemtime.wDay * 24 * 3600 + systemtime.wHour * 3600 + systemtime.wMinute *60 + systemtime.wSecond + systemtime.wMilliseconds / 1000.0;
+	return (float)(systemtime.wDay * 24 * 3600 + 
+		systemtime.wHour * 3600 + 
+		systemtime.wMinute *60 + 
+		systemtime.wSecond + 
+		systemtime.wMilliseconds / 1000.0);
 }
 
 bool string_compare(char *str1, char *str2)
@@ -44,15 +42,10 @@ bool string_compare(char *str1, char *str2)
 
 app_type parse_command(int argc, char *argv[], Optinons* pOptinons)
 {
-	//memcpy(pOptinons->ip_addr, DEFAULT_IP_ADDRESS, sizeof(DEFAULT_IP_ADDRESS));
-	pOptinons->port = DEFAULT_PORT;
-	pOptinons->buffer_count = DEFAULT_BUFFER_COUNT;
-	pOptinons->buffer_length = DEFAULT_BUFFER_SIZE;
-
 	// 服务端，接收
-	if (argc >= 1 && argc <= 3)
+	if (argc == 3)
 	{
-		if (argc >= 3 && string_compare(argv[1], "-r"))
+		if (string_compare(argv[1], "-r"))
 		{
 			for (int i = 2; i < argc; ++i)
 			{
@@ -61,20 +54,17 @@ app_type parse_command(int argc, char *argv[], Optinons* pOptinons)
 			return app_server_type;
 		}
 
-		if (argc == 1)
-		{
-			return app_server_type;
-		}
+		return app_none_type;
 	}
 
 	// ttcp -t host
-	if (argc >= 3 && string_compare(argv[1], "-t"))
+	if (argc == 8 && string_compare(argv[1], "-t"))
 	{
 		struct hostent *hptr;
 
 		if ((hptr = gethostbyname(argv[2])) == NULL)
 		{
-			cout << "gethostbyname error for host:" << argv[2] << endl;
+			printf("gethostbyname error for host: %s\n", argv[2]);
 			return app_none_type;
 		}
 
@@ -83,29 +73,26 @@ app_type parse_command(int argc, char *argv[], Optinons* pOptinons)
 			return app_none_type;
 		}
 
-		for (int i = 3; i < argc;)
-		{
-			if (string_compare(argv[i], "-l"))
-			{
-				pOptinons->buffer_length = atoi(argv[i + 1]);
-			}
-			else if (string_compare(argv[i], "-n"))
-			{
-				pOptinons->buffer_count = atoi(argv[i + 1]);
-			}
-			else if (i == 3)
-			{
-				pOptinons->port = atoi(argv[i]);
-				i++;
-				continue;
-			}
-			else
-			{
-				return app_none_type;
-			}
+		pOptinons->port = atoi(argv[3]);
 
-			i += 2;
+		if (string_compare(argv[4], "-l"))
+		{
+			pOptinons->buffer_length = atoi(argv[5]);
 		}
+		else
+		{
+			return app_none_type;
+		}
+
+		if (string_compare(argv[6], "-n"))
+		{
+			pOptinons->buffer_count = atoi(argv[7]);
+		}
+		else
+		{
+			return app_none_type;
+		}
+
 		return app_client_type;
 	}
 
@@ -125,15 +112,62 @@ struct PayloadMessage
 	char data[0];//使用char[0]来表示不定长的数据，可以考虑用const char* 和 std::unique_ptr代替
 };
 
-void server_logic(int port)
+int read_n(SOCKET s, char *pbuf, int buf_length)
+{
+	int len = 0;
+	while (len != buf_length)
+	{
+		int nReadLen = recv(s, pbuf + len, buf_length - len, 0);
+		if (nReadLen > 0)
+		{
+			len += nReadLen;
+		}
+		else if (nReadLen == 0)
+		{
+			break;
+		}
+		else
+		{
+			printf("读取数据出错\n");
+			exit(1);
+		}
+	}
+
+	return len;
+}
+
+int write_n(SOCKET s, char *pbuf, int buf_length)
+{
+	int len = 0;
+	while (len != buf_length)
+	{
+		int nWriteLen = send(s, pbuf + len, buf_length - len, 0);
+		if (nWriteLen > 0)
+		{
+			len += nWriteLen;
+		}
+		else if (nWriteLen == 0)
+		{
+			break;
+		}
+		else
+		{
+			printf("写入数据失败");
+			exit(1);
+		}
+	}
+
+	return len;
+}
+
+SOCKET WaitClient(int port)
 {
 	//创建套接字
 	SOCKET sServer = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);	//服务端套接字
 	if (INVALID_SOCKET == sServer)
 	{
-		WSACleanup();
-		cout << "服务端创建套接字失败" << endl;
-		return;
+		printf("创建套接字失败\n");
+		return INVALID_SOCKET;
 	}
 
 	//绑定套接字
@@ -144,64 +178,67 @@ void server_logic(int port)
 	addrServer.sin_port = htons(port);
 	if (bind(sServer, (SOCKADDR*)& addrServer, sizeof(addrServer)) == SOCKET_ERROR)
 	{
-		WSACleanup();
-		cout << "服务端绑定套接字出错" << endl;
-		return;
+		printf("绑定套接字出错\n");
+		return INVALID_SOCKET;
 	}
 
 	//监听套接字
 	if (SOCKET_ERROR == listen(sServer, 1))
 	{
-		WSACleanup();
-		cout << "服务端监听套接字出错" << endl;
-		return;
+		printf("监听套接字出错\n");
+		return INVALID_SOCKET;
 	}
 
+	//等到连接套接字
+	SOCKET sAccept;
+	sockaddr_in addrClient;
+	memset(&addrClient, 0, sizeof(sockaddr_in));
+	int addrClientLen = sizeof(addrClient);
+	sAccept = accept(sServer, (SOCKADDR*)&addrClient, &addrClientLen);
+	if (sAccept == INVALID_SOCKET)
+	{
+		printf("接受套接字失败\n");
+	}
+	closesocket(sServer);
+
+	return sAccept;
+}
+
+void server_logic(int port)
+{
 	while (1)
 	{
 		//等到连接套接字
-		SOCKET sAccept;
-		sockaddr_in addrClient;
-		memset(&addrClient, 0, sizeof(sockaddr_in));
-		int addrClientLen = sizeof(addrClient);
-		sAccept = accept(sServer, (SOCKADDR*)&addrClient, &addrClientLen);
+		SOCKET sAccept = WaitClient(port);
 		if (sAccept == INVALID_SOCKET)
 		{
-			closesocket(sServer);
-			WSACleanup();
-			cout << "接受套接字失败" << endl;
+			printf("接受套接字失败\n");
 			return;
 		}
 
 		//接收数据
-		char bufRead[128];
 		SessionMessage session_info;
-		int nReadLen = recv(sAccept, bufRead, sizeof(session_info), 0);
-		session_info.number = (((SessionMessage *)bufRead)->number);
-		session_info.length = (((SessionMessage *)bufRead)->length);
-		cout << "服务端收到 SessionMessage: 包个数=" << session_info.number << " 每个包的大小=" << session_info.length << endl;
-		float total_mb = 1.0 * session_info.number * session_info.length / 1024 / 1024;
-		//cout << total_mb << " MiB in total" << endl;
-		printf("%.3f MiB in total\n", total_mb);
+		float total_mb = 0;
+		if (sizeof(session_info) == read_n(sAccept, (char *)&session_info, sizeof(session_info)))
+		{
+			printf("服务端收到 SessionMessage: 包个数=%d 每个包的大小=%d\n", session_info.number, session_info.length);
+			total_mb = (float)(1.0 * session_info.number * session_info.length / 1024 / 1024);
+			printf("%.3f MiB in total\n", total_mb);
+		}
+		else
+		{
+			printf("SessionMessage 错误\n");
+			return;
+		}
 
 		const int total_len = sizeof(int32_t) + session_info.length;
 		char* p = new char[total_len];
 
 		float start = now();
-		int index = 0;
 		for (int i = 0; i < session_info.number; ++i)
 		{
-			int len = 0;
-			while (len != total_len)
+			if (read_n(sAccept, p, total_len) != total_len)
 			{
-				char *tmp = p + len;
-				int nReadLen = recv(sAccept, tmp, total_len - len, 0);
-				len += nReadLen;
-			}
-			
-			if (0 && nReadLen != total_len)
-			{
-				cout << "服务端收到的数据不对: 实际接受到的数据大小=" << nReadLen << " 应该接收到的数据大小=" << total_len << endl << endl;
 				goto end_point;
 			}
 
@@ -209,14 +246,15 @@ void server_logic(int port)
 
 			if (payload->length != session_info.length)
 			{
-				cout << "服务端收到的包体数据不对: 实际接受到的数据大小=" << payload->length << " 应该接收到的数据大小=" << session_info.length << endl;
+				printf("服务端收到的包体数据不对: 实际接受到的数据大小==%d 应该接收到的数据大小=%d\n", payload->length, session_info.length);
 				break;
 			}
 
-			//int ack = htonl(payload->length);
 			int ack = payload->length;
-			send(sAccept, (char *)&ack, sizeof(ack), 0);
-			//cout << index++;
+			if (write_n(sAccept, (char *)&ack, sizeof(ack)) != sizeof(ack))
+			{
+				goto end_point;
+			}
 		}
 		float elapsed = now() - start;
 		if (elapsed)
@@ -232,21 +270,19 @@ end_point:
 		delete[] p;
 		closesocket(sAccept);
 	}
-	closesocket(sServer);
-	WSACleanup();
 }
 
-void client_logic(char *ip_addr, int port, int buffer_count, int buffer_length)
+SOCKET ConnectServer(char *ip_addr, int port)
 {
 	//创建SOCKET
 	SOCKET sClient = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (sClient == INVALID_SOCKET)
 	{
 		WSACleanup();
-		cout << "客户端创建套接字失败" << endl;
-		return;
+		printf("创建套接字失败\n");
+		return INVALID_SOCKET;
 	}
-	
+
 	//连接服务端
 	sockaddr_in addrServer;
 	addrServer.sin_family = AF_INET;
@@ -256,15 +292,29 @@ void client_logic(char *ip_addr, int port, int buffer_count, int buffer_length)
 	{
 		WSACleanup();
 		closesocket(sClient);
-		cout << "客户端连接服务器失败" << endl;
-		return;
+		printf("连接服务器失败\n");
+		return INVALID_SOCKET;
 	}
 
 	BOOL setFalse = FALSE;
 	int ret = setsockopt(sClient, IPPROTO_TCP, TCP_NODELAY, (char *)&setFalse, sizeof(BOOL));
 	if (ret != 0)
 	{
-		cout << "fck " << GetLastError() << endl;
+		printf("设置套接字参数失败，错误码: %d\n", GetLastError());
+		return INVALID_SOCKET;
+	}
+
+	return sClient;
+}
+
+void client_logic(char *ip_addr, int port, int buffer_count, int buffer_length)
+{
+	//创建SOCKET
+	SOCKET sClient = ConnectServer(ip_addr, port);
+	if (sClient == INVALID_SOCKET)
+	{
+		printf("客户端创建套接字失败\n");
+		return;
 	}
 
 	int number = buffer_count;
@@ -273,7 +323,13 @@ void client_logic(char *ip_addr, int port, int buffer_count, int buffer_length)
 	sessionMessage.number = (number);
 	sessionMessage.length = (length);
 	send(sClient, (char *)&sessionMessage, sizeof(sessionMessage), 0);
-	cout << "客户端发送 SessionMessage: 包个数=" << sessionMessage.number << " 每个包的大小=" << sessionMessage.length << endl;
+	if (write_n(sClient, (char *)&sessionMessage, sizeof(sessionMessage) != sizeof(sessionMessage)))
+	{
+		printf("写SessionMessage失败\n");
+		closesocket(sClient);
+		return;
+	}
+	printf("客户端发送 SessionMessage: 包个数=%d 每个包的大小=%d\n", sessionMessage.number, sessionMessage.length);
 
 	const int total_len = sizeof(int32_t) + length;
 	char *p = new char[total_len];
@@ -285,31 +341,29 @@ void client_logic(char *ip_addr, int port, int buffer_count, int buffer_length)
 		payload->data[i] = "0123456789ABCDEF"[i % 16];
 	}
 
-	cout << "客户端准备开始发送 PayloadMessage..." << endl;
 	for (int i = 0; i < number; ++i)
 	{
-		int send_size = send(sClient, (char *)payload, total_len, 0);
-		if (send_size != total_len)
+		if (write_n(sClient, (char *)payload, total_len) != total_len)
 		{
-			cout << "客户端发送数据出错: 实际发送的数据大小=" << send_size << " 应该发送的数据大小=" << total_len << endl;
+			printf("客户端发送数据出错\n");
 			break;
 		}
 
 		int ack = 0;
-		int nReadLen = recv(sClient, (char *)&ack, sizeof(ack), 0);
-		//ack = ntohl(ack);
-		if (ack != length)
+		if (read_n(sClient, (char *)&ack, sizeof(ack)) != sizeof(ack))
 		{
-			cout << "客户端收到的确认数据出错: 实际收到的数据大小=" << ack << " 应该收到的数据大小=" << length << endl;
+			printf("客户端收取数据出错\n");
 			break;
 		}
+		if (ack != length)
+		{
+			printf("客户端收到的确认数据出错: 实际收到的数据大小=%d 应该收到的数据大小=%d\n", ack, length);
+		}
 
-		//cout << index++;
 	}
 
 	delete[] payload;
 	closesocket(sClient);
-	WSACleanup();
 }
 
 int main(int argc, char *argv[])
@@ -322,21 +376,23 @@ int main(int argc, char *argv[])
 
 	if (app_t == app_server_type)
 	{
-		cout << "port: " << opt.port << "\naccepting..." << endl;
+		printf("port: %d\naccepting...", opt.port);
 		server_logic(opt.port);
 	}
 	else if (app_t == app_client_type)
 	{
-		cout << "connecting " << opt.ip_addr << ":" << opt.port << endl;
-		cout << "buffer length: " << opt.buffer_length << endl;
-		cout << "number of buffers: " << opt.buffer_count << endl;
+		printf("connecting %s:%d\n", opt.ip_addr, opt.port);
+		printf("buffer length: %d\n", opt.buffer_length);
+		printf("number of buffers: %d\n", opt.buffer_count);
 		client_logic(opt.ip_addr, opt.port, opt.buffer_count, opt.buffer_length);
 	}
-	else if (app_t = app_none_type)
+	else if (app_t == app_none_type)
 	{
-		cout << "ttcp option wrong" << endl;
-		return 1;
+		printf("ttcp usage:\n");
+		printf("  ttcp -r port\n");
+		printf("  ttcp -t host port -l length -n number\n");
 	}
 		
+	WSACleanup();
 	return 0;
 }
